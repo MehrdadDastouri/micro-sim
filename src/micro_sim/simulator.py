@@ -11,6 +11,7 @@ from micro_sim.models import (
     PacketType,
     Side,
 )
+from micro_sim.slippage import MarketImpactModel
 
 
 class DiscreteEventSimulator:
@@ -20,10 +21,12 @@ class DiscreteEventSimulator:
         self,
         inbound_latency: NetworkLatencyModel,
         outbound_latency: NetworkLatencyModel,
+        slippage_model: Optional[MarketImpactModel] = None,
         on_client_report: Optional[Callable[[ExecutionReport, int], None]] = None,
     ) -> None:
         self.inbound_latency = inbound_latency
         self.outbound_latency = outbound_latency
+        self.slippage_model = slippage_model or MarketImpactModel()
         self.on_client_report = on_client_report
 
         self.current_time_ns: int = 0
@@ -33,8 +36,6 @@ class DiscreteEventSimulator:
         # Simulated exchange state
         self._resting_orders: Dict[int, OrderIntent] = {}
         self._order_id_counter: int = 1000
-
-        # Reference market mid-price used to calculate execution slippage
         self.market_mid_price: float = 100.0
 
     def schedule_event(self, timestamp_ns: int, event_type: PacketType, payload: object) -> None:
@@ -103,11 +104,19 @@ class DiscreteEventSimulator:
         )
 
         if is_market_cross:
+            transit_duration = self.current_time_ns - order.client_timestamp_ns
+            slip = self.slippage_model.compute_slippage(
+                decision_price=self.market_mid_price,
+                quantity=order.quantity,
+                side=order.side,
+                transit_delay_ns=transit_duration,
+            )
+
             report = ExecutionReport(
                 client_order_id=order.client_order_id,
                 exchange_order_id=exchange_id,
                 status=OrderStatus.FILLED,
-                fill_price=self.market_mid_price,
+                fill_price=slip.execution_price,
                 fill_quantity=order.quantity,
                 exchange_timestamp_ns=self.current_time_ns,
             )
